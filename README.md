@@ -3,7 +3,7 @@ labscript-suite internal pseudoclock device for National Instruments DAQmx cards
 
 This labscript-device uses the internal counters of the National Instruments cards PXIe-6738 as pseudoclock to trigger the analog and digital outputs of the same card and of other cards like the PXIe-6535 for additional digital outputs. Each of the PXIe-6738 cards can provide two counters as pseudoclocks. The counters can be shared with other cards.
 
-For clocking the counters can use always the interal 100MHz clock of the PXIe-6738 cards but which can be optionally locked to an external reference clock (tested with 10MHz) applied on one of the PFI ports. 
+For clocking the counters use always the interal 100MHz clock of the PXIe-6738 cards but which can be optionally locked to an external reference clock applied on one of the PFI ports. This was successfully tested with 10MHz. 
 
 To synchronize several counters an external start trigger must be used.
 
@@ -19,4 +19,4 @@ We interpret this error, that the rather small FIFO of the counters of the PXIe-
 We provide also a [C code](https://github.com/INO-quantum/labscript_NI_DAQmx_iPCdev/tree/main/C_code) which has the same functionality as the labscript/Python code. It was tested on Windows using Visual Studio and on Ubuntu with gcc. We used it for our initial development of the Python code and to test and understand better the above described error. It is much simpler than the rather involved labscript implementation where special care must be taken to synchronize the workers processes for the different boards.
 
 > [!Note]
-> This project was developed in collaboration with a different laboratory where NI hardware is used. I work with different hardware and can therefore not perform additional tests with NI hardware. Most of this code was developed with simulated hardware and was then later tested and debugged on the real hardware.
+> This project was developed in collaboration with a different laboratory where NI hardware is used. I work with different hardware and therefore cannot perform additional tests with NI hardware. Most of this code was developed with simulated hardware and was then later tested and debugged on the real hardware.
