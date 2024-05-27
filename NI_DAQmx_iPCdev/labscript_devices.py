@@ -13,7 +13,7 @@
 
 __version__ = '1.1.0'
 
-# Jan-April 2024, modified by Andi to generate pseudoclock with NIDAQmx counter.
+# Jan-May 2024, modified by Andi to generate pseudoclock with NIDAQmx counter.
 
 from labscript import (
     IntermediateDevice,
@@ -90,7 +90,6 @@ class NI_DAQmx_iPCdev(iPCdev):
                 "clock_rate",
                 "clock_mirror_terminal",
                 "internal_clock_rate",
-                #"clock_limit",
                 "start_trigger_terminal",
                 "start_trigger_edge",
                 "connected_terminals",
@@ -136,7 +135,6 @@ class NI_DAQmx_iPCdev(iPCdev):
                  clock_terminal=None,
                  clock_rate=1e6,
                  clock_mirror_terminal=None,
-                 #clock_limit=None,
                  internal_clock_rate=DAQMX_INTERNAL_CLOCKRATE,
                  start_trigger_terminal=None,
                  start_trigger_edge='rising',

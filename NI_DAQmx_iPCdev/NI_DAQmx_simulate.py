@@ -1,7 +1,9 @@
 # NI_DAQmx_simulate.h
-# simulate NI- commands
+# simulate NI-commands
 # created 25/4/2024 by Andi
-# last change 25/4/2024 by andi
+# last change 13/5/2024 by Andi
+# this is only needed when you do not have a NI installation and still want to test the software without hardware.
+
 from ctypes import c_uint as uInt32, c_void_p, byref, cast, POINTER, c_wchar
 
 TaskHandle = c_void_p

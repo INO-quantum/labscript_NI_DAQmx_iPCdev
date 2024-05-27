@@ -10,17 +10,20 @@
 # file in the root of the project for the full license.             #
 #                                                                   #
 #####################################################################
+
+# Jan-May 2024, modified by Andi to generate pseudoclock with NIDAQmx counter.
+
 import labscript_utils.h5_lock
 import h5py
-from labscript_utils import dedent
+from labscript import LabscriptError
 
-#from .utils import split_conn_AO, split_conn_DO
 from labscript_devices.NI_DAQmx.utils import split_conn_AO, split_conn_DO
 import warnings
 
 from user_devices.iPCdev.blacs_tabs import iPCdev_tab
 
-# Jan-April 2024, modified by Andi to generate pseudoclock with NIDAQmx counter.
+from PyQt5.QtWidgets import QPushButton
+
 worker_path = 'user_devices.NI_DAQmx_iPCdev.blacs_workers.NI_DAQmx_OutputWorker'
 
 # status monitor update time
@@ -86,4 +89,14 @@ class NI_DAQmx_tab(iPCdev_tab):
         # Set the capabilities of this device
         self.supports_remote_value_check(False)
         self.supports_smart_programming(True)
+
+        # test button
+        layout = self.get_tab_layout()
+        button = QPushButton('test!')
+        button.setStyleSheet('QPushButton {color: red; border:1px solid #ff0000; border-radius: 3px;}')
+        layout.addWidget(button)
+        button.clicked.connect(self.test)
         
+    def test(self, event):
+        print('test!')
+        raise LabscriptError("test!")

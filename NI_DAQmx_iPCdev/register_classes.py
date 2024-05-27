@@ -10,11 +10,9 @@
 # file in the root of the project for the full license.             #
 #                                                                   #
 #####################################################################
-import os
-import json
 from labscript_devices import register_classes
 
-# Jan-Feb 2024, modified by Andi to generate pseudoclock with NIDAQmx counter.
+# Jan-May 2024, modified by Andi to generate pseudoclock with NIDAQmx counter.
 
 blacs_path  = 'user_devices.NI_DAQmx_iPCdev.blacs_tabs.NI_DAQmx_tab'
 viewer_path = 'user_devices.NI_DAQmx_iPCdev.runviewer_parsers.NI_DAQmx_parser'

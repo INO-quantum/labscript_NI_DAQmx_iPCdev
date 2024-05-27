@@ -11,6 +11,8 @@
 #                                                                   #
 #####################################################################
 
+# Jan-May 2024, modified by Andi to generate pseudoclock with NIDAQmx counter.
+
 import sys
 import time
 import threading
@@ -55,17 +57,11 @@ from user_devices.iPCdev.labscript_devices import (
     DEVICE_INFO_TYPE, DEVICE_INFO_PATH, DEVICE_INFO_ADDRESS, DEVICE_INFO_CHANNEL, DEVICE_INFO_BOARD,
     HARDWARE_TYPE_AO, HARDWARE_TYPE_DO, HARDWARE_TYPE_STATIC_AO, HARDWARE_TYPE_STATIC_DO,
 )
-from user_devices.iPCdev.blacs_workers import iPCdev_worker
+from user_devices.iPCdev.blacs_workers import iPCdev_worker, SYNC_RESULT_OK, SYNC_RESULT_TIMEOUT, SYNC_RESULT_TIMEOUT_OTHER
 from user_devices.NI_DAQmx_iPCdev.labscript_devices import START_TRIGGER_EDGE_RISING, START_TRIGGER_EDGE_FALLING, DAQMX_INTERNAL_CLOCKRATE
 
-# TODO this works? remove and maybe use same way?
-#from .utils import split_conn_port, split_conn_DO, split_conn_AI
 from labscript_devices.NI_DAQmx.utils import split_conn_port, split_conn_DO
 from .labscript_devices import NI_DAQmx_iPCdev
-
-#from time import sleep
-# test
-from user_devices.h5_file_parser import read_group
 
 # display status information only every UPDATE_TIME seconds
 UPDATE_TIME         = 1.0
@@ -89,45 +85,6 @@ LOCK_REFCLOCK_AO_DO         = True      # required, otherwise get an error
 # output channel info for each run for CO/AO/DO channels. set to None if should not print this
 # device name, number and type of channels, counter port name, number of samples, additional info
 CHANNEL_INFO = '%-16s %-26s %26s %16s %10i samples%s'
-
-# unique event id's in steps of 2
-EVENT_UPDATE    = 2
-EVENT_STATIC    = 4
-EVENT_COUNTER   = 6
-EVENT_START     = 8
-EVENT_STOP      = 10
-
-# Jan-April 2024, modified by Andi to generate pseudoclock with NIDAQmx counter.
-# notes:
-# - we use one or several counters of the PXIe6738 card to generate the
-#   pseudoclock signals on one or several PFI ports.
-#   other NI cards might have similar counters and could be used as well.
-# - although a function for assigning the PFI port exists, this gives an error,
-#   probably because the counter has only one specific output?
-#   other boards might behave differently.
-#   in Labview one can assign arbitrary PFI ports but I think this internally
-#   connects/routes the terminals.
-# - the connected_terminals should allow to route PFI ports but has not been tested.
-# - give the output PFI port of the counter as the clock_terminal input
-#   for the digital and analog output boards.
-# - using several coutners / pseudoclock signals allows to separate slow and
-#   fast outputs. otherwise slower devices limit faster ones.
-#   the slowest device on the pseudoclock limits the output rate of the pseudoclock. 
-# - it is possible to use the analog and digital outputs of the PXIe6738 card which generates the pseudoclocks.
-#   but there are some synchronization issues since in this case two blacs workers
-#   will be talking to the same PXIe6738 card at the same time!
-#   in this case you might experience errors like this:
-#     PyDAQmx.DAQmxFunctions.ResourceAlreadyReservedError:
-#     Resource requested by this task has already been reserved
-#     by a different task.
-#   the functions sync_with_boards and sync_with_pseudoclock take care of this.
-# - when the Abort button is pressed then the initial state before the experiment is reset.
-# - TODO: at the moment we always clear all tasks and upload all data in each loop,
-#         but this is not necessary when the data has not changed.
-# - TODO: at the moment the analog and digital outputs after the experiment
-#         are left in the final state of the experiment and are not reset to a "safe" state!
-#         the values of the channel are updated to the actual state.
-
 
 # minimum low and high time in seconds and ticks. for ticks depends on the clock rate.
 MIN_TIME            = 60e-9
@@ -353,7 +310,28 @@ class NI_DAQmx_OutputWorker(iPCdev_worker):
         # obtained by primary board and returned to status_monitor with status_end=True
         self.board_status = {}
 
-        print(self.events)
+        # event test:
+        if False and self.is_primary:
+            events = [self.process_tree.event('prim_test_event_0', role='both'),self.process_tree.event('prim_test_event_1', role='both')]
+            num = 10
+            for i in range(num):
+                events[0].post(i, data=i)
+                events[1].post(i, data=i + num)
+            time.sleep(1.0)
+            for i in range(num):
+                try:
+                    data = [0,0]
+                    data[1] = events[1].wait(i, timeout = 1.0)
+                    data[0] = events[0].wait(i, timeout=1.0)
+                except zTimeoutError:
+                    print('event test %i timeout!' % (i))
+                    break
+                if (data[0] == i) and (data[1] == i+num):
+                    print('event test ok', i)
+                else:
+                    print('event test ', i, "!=", data)
+            del events
+
 
         # start in manual mode. program_manual is called after this returns.
         self.initial_values = {}
@@ -1028,15 +1006,29 @@ class NI_DAQmx_OutputWorker(iPCdev_worker):
             # surprisingly, when programming manual this does not happen although ClearTask is called as well
             # but in this case the new created buffered tasks have the SAME handles as the old and NIDAQmx does not recognize this (looks like a bug?).
             # to be sure we force all boards to update in any case here.
-            (timeout, board_update) = self.sync_boards(id=EVENT_UPDATE, payload=update)
-            if timeout:
-                print("\ntimeout waiting for board status update!\nthis can happen at startup. restart blacs and it should work.\n")
-                return None
+            # on fresh start we sometimes get timeout here. with retry=1 the events are re-created and function tries one more time.
+            reset_event_counter = False
+            for i in range(2):
+                (timeout, board_update, duration) = self.sync_boards(payload=update, reset_event_counter=reset_event_counter)
+                if timeout == SYNC_RESULT_OK: break
+                elif i == 0:
+                    # first timeout: most likely worker has been restarted.
+                    # reset event counter and force update of all boards.
+                    print("\ntimeout: restarted board? reset & retry ...\n")
+                    reset_event_counter = True
+                    update = True
+                else:
+                    # second timeout: something more serious happenend?
+                    print("\ntimeout waiting for board status update!\n")
+                    return None # this causes abort_transition_to_buffered which does not require user to restart worker.
 
+            # update if any board needs to update
             print('board update:', board_update)
-            if not update: # update if any board needs to update
-                for board, _update in board_update.items():
-                    if _update: update = True; break
+            for board, _update in board_update.items():
+                if _update: update = True
+                elif reset_event_counter: # ensure that all boards update after restart
+                    print("\n%s %s is not updating after successful restart!?\n" % (self.device_name, board))
+                    return None
 
             if update:
                 # clear all old tasks (manual or buffered) otherwise get errors of already used resources.
@@ -1054,7 +1046,7 @@ class NI_DAQmx_OutputWorker(iPCdev_worker):
             final_values.update(self.program_static_DO(DO_table_static))
 
             # wait until all static channels are programmed.
-            if self.sync_boards(id=EVENT_STATIC)[0]:
+            if self.sync_boards()[0] != SYNC_RESULT_OK:
                 print("\ntimeout waiting for static channels programmed!\n")
                 return None
 
@@ -1068,7 +1060,7 @@ class NI_DAQmx_OutputWorker(iPCdev_worker):
             self.program_buffered_CO(CO_table)
 
             # wait until all boards have programmed counters and share counters output ports among boards
-            (timeout, board_counters) = self.sync_boards(id=EVENT_COUNTER, payload={c:p[0] for c,p in self.counter_ports.items()} if len(self.counter_ports) > 0 else None)
+            (timeout, board_counters, duration) = self.sync_boards(payload={c:p[0] for c,p in self.counter_ports.items()} if len(self.counter_ports) > 0 else None)
             if timeout:
                 print("\ntimeout waiting for counter PFI ports of other boards!\n")
                 return None # TODO should cause abort transition to buffered?
@@ -1097,7 +1089,7 @@ class NI_DAQmx_OutputWorker(iPCdev_worker):
             #print('final values:', final_values)
 
             # wait until all boards have programmed output channels
-            if self.sync_boards(id=EVENT_START)[0]:
+            if self.sync_boards()[0] != SYNC_RESULT_OK:
                 print("\ntimeout program channels!\n")
                 return None
         
@@ -1192,7 +1184,7 @@ class NI_DAQmx_OutputWorker(iPCdev_worker):
         else:
             # wait until all boards have stopped tasks before programming manual tasks
             # return status all_ok to primary board
-            (timeout, self.board_status) = self.sync_boards(id=EVENT_STOP, payload=error)
+            (timeout, self.board_status, duration) = self.sync_boards(payload=error)
             if timeout:
                 print("\ntimeout stop tasks!\n")
                 return False # user has to restart all tabs which is not so nice.
