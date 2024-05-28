@@ -29,8 +29,6 @@ worker_path = 'user_devices.NI_DAQmx_iPCdev.blacs_workers.NI_DAQmx_OutputWorker'
 # status monitor update time
 UPDATE_TIME_MS = 250
 
-from time import sleep
-
 class NI_DAQmx_tab(iPCdev_tab):
     def initialise_GUI(self):
         # set shared clocklines between boards:
@@ -89,14 +87,3 @@ class NI_DAQmx_tab(iPCdev_tab):
         # Set the capabilities of this device
         self.supports_remote_value_check(False)
         self.supports_smart_programming(True)
-
-        # test button
-        layout = self.get_tab_layout()
-        button = QPushButton('test!')
-        button.setStyleSheet('QPushButton {color: red; border:1px solid #ff0000; border-radius: 3px;}')
-        layout.addWidget(button)
-        button.clicked.connect(self.test)
-        
-    def test(self, event):
-        print('test!')
-        raise LabscriptError("test!")
