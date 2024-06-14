@@ -12,6 +12,7 @@
 #####################################################################
 
 # Jan-May 2024, modified by Andi to generate pseudoclock with NIDAQmx counter.
+# last change 14/6/2024 by Andi
 
 import labscript_utils.h5_lock
 import h5py
@@ -31,11 +32,6 @@ UPDATE_TIME_MS = 250
 
 class NI_DAQmx_tab(iPCdev_tab):
     def initialise_GUI(self):
-        # set shared clocklines between boards:
-        # - displays all channels belonging to boards and not to clocklines.
-        # - self.channels given to worker contains only channels belonging to board.
-        # - self.clocklines given to worker contains the IM devices belonging to board.
-        self.set_shared_clocklines(True)
         # set update time how often status_monitor is called
         self.set_update_time_ms(UPDATE_TIME_MS)
         # call super class
@@ -55,24 +51,6 @@ class NI_DAQmx_tab(iPCdev_tab):
         self.worker_args.update({
             'Vmin': AO_base_min,
             'Vmax': AO_base_max,
-        })
-
-        # TODO: wait monitor is not implemented and purpose and implementation unclear?
-        # We only need a wait monitor worker if we are if fact the device withx the wait monitor input.
-        with h5py.File(self.settings['connection_table'].filepath, 'r') as f:
-            waits = f['waits']
-            wait_acq_device = waits.attrs['wait_monitor_acquisition_device']
-            wait_acq_connection = waits.attrs['wait_monitor_acquisition_connection']
-            wait_timeout_device = waits.attrs['wait_monitor_timeout_device']
-            wait_timeout_connection = waits.attrs['wait_monitor_timeout_connection']
-            try:
-                timeout_trigger_type = waits.attrs['wait_monitor_timeout_trigger_type']
-            except KeyError:
-                timeout_trigger_type = 'rising'
-        self.worker_args.update({
-            'wait_timeout_device': wait_timeout_device,
-            'wait_timeout_connection': wait_timeout_connection,
-            'wait_timeout_rearm_value': int(timeout_trigger_type == 'falling'),
         })
 
         # create worker

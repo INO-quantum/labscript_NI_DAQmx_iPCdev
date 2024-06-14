@@ -12,6 +12,7 @@
 #####################################################################
 
 # Jan-May 2024, modified by Andi to generate pseudoclock with NIDAQmx counter.
+# last change 14/6/2024 by Andi
 
 import sys
 import time
@@ -55,7 +56,8 @@ from user_devices.iPCdev.labscript_devices import (
     DEVICE_HARDWARE_INFO, DEVICE_DEVICES, DEVICE_SEP,
     DEVICE_TIME, DEVICE_DATA_DO, DEVICE_DATA_AO,
     DEVICE_INFO_TYPE, DEVICE_INFO_PATH, DEVICE_INFO_ADDRESS, DEVICE_INFO_CHANNEL, DEVICE_INFO_BOARD,
-    HARDWARE_TYPE_AO, HARDWARE_TYPE_DO, HARDWARE_TYPE_STATIC_AO, HARDWARE_TYPE_STATIC_DO,
+    HARDWARE_TYPE, HARDWARE_TYPE_AO, HARDWARE_TYPE_DO,
+    HARDWARE_SUBTYPE, HARDWARE_SUBTYPE_STATIC, HARDWARE_SUBTYPE_TRIGGER,
 )
 from user_devices.iPCdev.blacs_workers import iPCdev_worker, SYNC_RESULT_OK, SYNC_RESULT_TIMEOUT, SYNC_RESULT_TIMEOUT_OTHER
 from user_devices.NI_DAQmx_iPCdev.labscript_devices import START_TRIGGER_EDGE_RISING, START_TRIGGER_EDGE_FALLING, DAQMX_INTERNAL_CLOCKRATE
@@ -63,8 +65,19 @@ from user_devices.NI_DAQmx_iPCdev.labscript_devices import START_TRIGGER_EDGE_RI
 from labscript_devices.NI_DAQmx.utils import split_conn_port, split_conn_DO
 from .labscript_devices import NI_DAQmx_iPCdev
 
+# for testing
+from user_devices.h5_file_parser import read_group
+
 # display status information only every UPDATE_TIME seconds
 UPDATE_TIME         = 1.0
+
+# if True reset sync counter each run.
+# TODO: False case is tested quite a lot and seems to work (although maybe in very rare cases could still cause timeout).
+#       True case is not much tested. this was original approach but did not worked due to subtle timing problems.
+#       these problems were debugged and hopefully all fixed and now also this case should work again.
+#       the problems mainly occur when restarting boards, after compilation or start of blacs, but only in rare cases.
+#       so its not so easy to detect if it is working now or not.
+SYNC_RESET_EACH_RUN = False
 
 # bytes to allocate for counter port
 COUNTER_BUFSIZE     = 128
@@ -201,6 +214,9 @@ def get_clock_ticks(times, clock_rate=None, values=None, safe_state=None, min_ti
     return [dtime_low, dtime_high]
 
 class NI_DAQmx_OutputWorker(iPCdev_worker):
+
+    iPCdev_worker.sync_reset_each_run = SYNC_RESET_EACH_RUN
+
     def init(self):
         global zTimeoutError; from zprocess.utils import TimeoutError as zTimeoutError
         global get_ticks; from time import perf_counter as get_ticks
@@ -430,9 +446,11 @@ class NI_DAQmx_OutputWorker(iPCdev_worker):
             else:
                 count = 0
                 for connection, device in self.channels.items():
-                    board         = device.hardware_info[DEVICE_INFO_BOARD]
-                    hardware_type = device.hardware_info[DEVICE_INFO_TYPE]
-                    if board == self.device_name and ((hardware_type == HARDWARE_TYPE_AO) or (hardware_type == HARDWARE_TYPE_STATIC_AO)):
+                    hardware_info    = device.properties[DEVICE_HARDWARE_INFO]
+                    board            = hardware_info[DEVICE_INFO_BOARD]
+                    hardware_type    = hardware_info[DEVICE_INFO_TYPE][HARDWARE_TYPE]
+                    #hardware_subtype = hardware_info[DEVICE_INFO_TYPE][HARDWARE_SUBTYPE]
+                    if board == self.device_name and (hardware_type == HARDWARE_TYPE_AO):
                         AO_data[count] = front_panel_values[connection]
                         count += 1
                 if count != self.num_AO: # sanity check
@@ -455,28 +473,21 @@ class NI_DAQmx_OutputWorker(iPCdev_worker):
             # https://forums.ni.com/t5/Multifunction-DAQ
             #     /problem-with-correlated-DIO-on-USB-6341/td-p/3344066
             DO_data = np.zeros(len(self.ports), dtype=np.uint32)
-            if False: # old code
-                for conn, value in front_panel_values.items():
-                    if conn.startswith('port'):
-                        port, line = split_conn_DO(conn)
-                        DO_data[port] |= value << line
-            else:
-                # new code
-                ports_channels = np.zeros(shape=(len(self.ports),), dtype=np.uint8)
-                for connection, device in self.channels.items():
-                    board = device.hardware_info[DEVICE_INFO_BOARD]
-                    hardware_type = device.hardware_info[DEVICE_INFO_TYPE]
-                    port = device.hardware_info[DEVICE_INFO_ADDRESS]
-                    line = device.hardware_info[DEVICE_INFO_CHANNEL]
-                    if board == self.device_name and hardware_type == HARDWARE_TYPE_DO:
-                        DO_data[port] |= front_panel_values[connection] << line
-                        ports_channels[port] += 1
-                # TODO: if there are static ports these are set to 0 here which is ok for the moment.
-                #       but they need to be implemented and tested.
-                #       it would be good to check below with == summing static + dynamic ports.
-                #       lhs is only dynamic at the moment.
-                if np.count_nonzero(ports_channels) > len(self.ports): # sanity check
-                    raise LabscriptError("number of DO ports %i > maximum %i?" % (np.count_nonzero(ports_channels), len(self.ports)))
+            # new code
+            ports_channels = np.zeros(shape=(len(self.ports),), dtype=np.uint8)
+            for connection, device in self.channels.items():
+                hardware_info    = device.properties[DEVICE_HARDWARE_INFO]
+                board            = hardware_info[DEVICE_INFO_BOARD]
+                hardware_type    = hardware_info[DEVICE_INFO_TYPE][HARDWARE_TYPE]
+                hardware_subtype = hardware_info[DEVICE_INFO_TYPE][HARDWARE_SUBTYPE]
+                port             = hardware_info[DEVICE_INFO_ADDRESS]
+                line             = hardware_info[DEVICE_INFO_CHANNEL]
+                if (board == self.device_name) and (hardware_type == HARDWARE_TYPE_DO) and (hardware_subtype != HARDWARE_SUBTYPE_TRIGGER):
+                    DO_data[port] |= front_panel_values[connection] << line
+                    ports_channels[port] += 1
+            # TODO: static ports not tested
+            if np.count_nonzero(ports_channels) > len(self.ports): # sanity check
+                raise LabscriptError("number of DO ports %i > maximum %i?" % (np.count_nonzero(ports_channels), len(self.ports)))
             self.DO_task.WriteDigitalU32(
                 1, True, 10.0, DAQmx_Val_GroupByChannel, DO_data, written, None
             )
@@ -530,42 +541,42 @@ class NI_DAQmx_OutputWorker(iPCdev_worker):
         self.exp_samples_AO = 0
         self.exp_samples_DO = 0
 
+        #read_group(f)
+
         # load times of board counters connected with AO/DO channels
         # they can be shared between boards and might be different from the AO/DO channels below.
         group = f[DEVICE_DEVICES]
         for device in self.clocklines:
-            hardware_info = device.properties[DEVICE_HARDWARE_INFO]
-            board         = hardware_info[DEVICE_INFO_BOARD]
-            hardware_type = hardware_info[DEVICE_INFO_TYPE]
+            hardware_info    = device.properties[DEVICE_HARDWARE_INFO]
+            board            = hardware_info[DEVICE_INFO_BOARD]
+            hardware_type    = hardware_info[DEVICE_INFO_TYPE][HARDWARE_TYPE]
+            hardware_subtype = hardware_info[DEVICE_INFO_TYPE][HARDWARE_SUBTYPE]
             if board == self.device_name:
                 if (hardware_type == HARDWARE_TYPE_AO) or (hardware_type == HARDWARE_TYPE_DO):
-                    counter = self.counter_AO if (hardware_type == HARDWARE_TYPE_AO) else self.counter_DO
-                    if counter != device.parent_port:
-                        print(device.device_class)
-                        raise LabscriptError("device '%s': counter '%s' given but '%s' expected!" % (device.name, device.parent_port, counter))
-                    g_IM = group[self.device_name + DEVICE_SEP + device.name]
-                    CO_table[device.parent_port] = times = g_IM[DEVICE_TIME][()]
-                    self.exp_samples_CO[device.parent_port] = len(times)
-                    if times is None:
-                        raise LabscriptError("device %s: dataset %s not existing!" % (device.name, dataset))
-                    #print('loading counter', device.parent_port, '%i times' % len(times))
-                    if times[-1] > self.exp_time: self.exp_time = times[-1]
-                elif (hardware_type == HARDWARE_TYPE_STATIC_AO) or (hardware_type == HARDWARE_TYPE_STATIC_DO):
-                    counter = [self.counter_AO, self.counter_DO]
-                    if device.parent_port in counter:
-                        raise LabscriptError("static device '%s': cannot use counter '%s'!" % (device.name, device.parent_port))
+                    if hardware_subtype == HARDWARE_SUBTYPE_TRIGGER:
+                        # skip trigger (DO) channel
+                        continue
+                    static = (hardware_subtype == HARDWARE_SUBTYPE_STATIC)
+                    if static:
+                        counter = [self.counter_AO, self.counter_DO]
+                        if device.parent_port in counter:
+                            raise LabscriptError("static device '%s': cannot use counter '%s'!" % (device.name, device.parent_port))
+                    else:
+                        counter = self.counter_AO if (hardware_type == HARDWARE_TYPE_AO) else self.counter_DO
+                        if counter != device.parent_port:
+                            print(device.device_class)
+                            raise LabscriptError("device '%s': counter '%s' given but '%s' expected!" % (device.name, device.parent_port, counter))
                     g_IM = group[self.device_name + DEVICE_SEP + device.name]
                     times = g_IM[DEVICE_TIME][()]
                     if times is None:
                         raise LabscriptError("device %s: dataset %s not existing!" % (device.name, dataset))
-                    elif len(times) != 2:
+                    elif static and len(times) != 2:
                         raise LabscriptError("device %s: 2 times expected but have got %i!" % (device.name, len(times)))
-                    #print('loading static clockline', device.parent_port, '(skip)')
+                    if not static:
+                        CO_table[device.parent_port] = times
+                    self.exp_samples_CO[device.parent_port] = len(times)
+                    #print('loading counter', device.parent_port, '%i times' % len(times))
                     if times[-1] > self.exp_time: self.exp_time = times[-1]
-                else:
-                    # skip virtual trigger device
-                    #print("info: device %s type %s (skip)" % (device.name, hardware_type))
-                    continue
             else:
                 # clocklines of other boards should have been already filtered by blacs_tabs
                 print("info: clockline %s of other board %s (skip)" % (device.name, hardware_type))
@@ -574,53 +585,55 @@ class NI_DAQmx_OutputWorker(iPCdev_worker):
         # load data tables for analog and digital outputs
         # we load only data for different addresses
         for connection, device in self.channels.items():
-            board         = device.hardware_info[DEVICE_INFO_BOARD]
-            hardware_type = device.hardware_info[DEVICE_INFO_TYPE]
-            address       = device.hardware_info[DEVICE_INFO_ADDRESS]
+            hardware_info    = device.properties[DEVICE_HARDWARE_INFO]
+            hardware_type    = hardware_info[DEVICE_INFO_TYPE][HARDWARE_TYPE]
+            hardware_subtype = hardware_info[DEVICE_INFO_TYPE][HARDWARE_SUBTYPE]
+            board            = hardware_info[DEVICE_INFO_BOARD]
+            address          = hardware_info[DEVICE_INFO_ADDRESS]
             if board == self.device_name:
-                if (hardware_type == HARDWARE_TYPE_AO) or (hardware_type == HARDWARE_TYPE_STATIC_AO):
+                if (hardware_type == HARDWARE_TYPE_AO):
                     dataset = DEVICE_DATA_AO % (device.name, address)
-                elif (hardware_type == HARDWARE_TYPE_DO) or (hardware_type == HARDWARE_TYPE_STATIC_DO):
+                elif (hardware_type == HARDWARE_TYPE_DO) and (hardware_subtype != HARDWARE_SUBTYPE_TRIGGER):
                     connection = connection.split(DEVICE_SEP)[0]
                     if connection in DO_table: continue # address already loaded
                     dataset = DEVICE_DATA_DO % (board, address)
                 else:
-                    # skip virtual trigger device. TODO: what about static?
-                    #print("info: device %s type %s (skip)" % (device.name, hardware_type))
                     continue
             else:
                 # devices of other boards should have been already filtered by blacs_tabs
                 print("info: device %s of other board %s (skip)" % (device.name, board))
                 continue
-            group = f[device.hardware_info[DEVICE_INFO_PATH]]
+            group = f[hardware_info[DEVICE_INFO_PATH]]
             times = group[DEVICE_TIME][()]
             data  = group[dataset][()]
             if data is None:
                 raise LabscriptError("device %s: dataset %s not existing!" % (device.name, dataset))
             elif hardware_type == HARDWARE_TYPE_AO:
-                if (len(times) != len(data)):
-                    raise LabscriptError("AO device %s: %i times but %i data!" % (device.name, len(times), len(data)))
-                AO_table[connection] = data
-                if self.exp_samples_AO == 0:
-                    self.exp_samples_AO = len(data)
-                elif self.exp_samples_AO != len(data):
-                    raise LabscriptError("AO device %s: %i samples different than before %i!\neach AO channel must use the same clockline!" % (device.name, self.exp_samples_AO, len(data)))
-            elif hardware_type == HARDWARE_TYPE_STATIC_AO:
-                if (len(times) != STATIC_MAX_SAMPLES) or (len(data) != 1):
-                    raise LabscriptError("static AO device %s: 2/1 times/data expected but got %i/%i!" % (device.name, len(times), len(data)))
-                AO_table_static[connection] = data
+                if hardware_subtype == HARDWARE_SUBTYPE_STATIC:
+                    if (len(times) != STATIC_MAX_SAMPLES) or (len(data) != 1):
+                        raise LabscriptError("static AO device %s: 2/1 times/data expected but got %i/%i!" % (device.name, len(times), len(data)))
+                    AO_table_static[connection] = data
+                else:
+                    if (len(times) != len(data)):
+                        raise LabscriptError("AO device %s: %i times but %i data!" % (device.name, len(times), len(data)))
+                    AO_table[connection] = data
+                    if self.exp_samples_AO == 0:
+                        self.exp_samples_AO = len(data)
+                    elif self.exp_samples_AO != len(data):
+                        raise LabscriptError("AO device %s: %i samples different than before %i!\neach AO channel must use the same clockline!" % (device.name, self.exp_samples_AO, len(data)))
             elif hardware_type == HARDWARE_TYPE_DO:
-                if (len(times) != len(data)):
-                    raise LabscriptError("DO device %s: %i times but %i data!" % (device.name, len(times), len(data)))
-                DO_table[connection] = data
-                if self.exp_samples_DO == 0:
-                    self.exp_samples_DO = len(data)
-                elif self.exp_samples_DO != len(data):
-                    raise LabscriptError("DO device %s: %i samples different than before %i!\neach AO channel must use the same clockline!" % (device.name, self.exp_samples_DO, len(data)))
-            elif hardware_type == HARDWARE_TYPE_STATIC_DO:
-                if (len(times) != STATIC_MAX_SAMPLES) or (len(data) != 1):
-                    raise LabscriptError("static DO device %s: 2/1 times/data expected but got %i/%i!" % (device.name, len(times), len(data)))
-                DO_table_static[connection] = data
+                if hardware_subtype == HARDWARE_SUBTYPE_STATIC:
+                    if (len(times) != STATIC_MAX_SAMPLES) or (len(data) != 1):
+                        raise LabscriptError("static DO device %s: 2/1 times/data expected but got %i/%i!" % (device.name, len(times), len(data)))
+                    DO_table_static[connection] = data
+                elif hardware_subtype != HARDWARE_SUBTYPE_TRIGGER:
+                    if (len(times) != len(data)):
+                        raise LabscriptError("DO device %s: %i times but %i data!" % (device.name, len(times), len(data)))
+                    DO_table[connection] = data
+                    if self.exp_samples_DO == 0:
+                        self.exp_samples_DO = len(data)
+                    elif self.exp_samples_DO != len(data):
+                        raise LabscriptError("DO device %s: %i samples different than before %i!\neach AO channel must use the same clockline!" % (device.name, self.exp_samples_DO, len(data)))
             if times[-1] > self.exp_time: self.exp_time = times[-1]
 
         return CO_table, AO_table, AO_table_static, DO_table, DO_table_static
@@ -1007,11 +1020,11 @@ class NI_DAQmx_OutputWorker(iPCdev_worker):
             # but in this case the new created buffered tasks have the SAME handles as the old and NIDAQmx does not recognize this (looks like a bug?).
             # to be sure we force all boards to update in any case here.
             # on fresh start we sometimes get timeout here. with retry=1 the events are re-created and function tries one more time.
-            reset_event_counter = False
+            reset_event_counter = SYNC_RESET_EACH_RUN
             for i in range(2):
                 (timeout, board_update, duration) = self.sync_boards(payload=update, reset_event_counter=reset_event_counter)
                 if timeout == SYNC_RESULT_OK: break
-                elif i == 0:
+                elif not SYNC_RESET_EACH_RUN and (i == 0):
                     # first timeout: most likely worker has been restarted.
                     # reset event counter and force update of all boards.
                     print("\ntimeout: restarted board? reset & retry ...\n")

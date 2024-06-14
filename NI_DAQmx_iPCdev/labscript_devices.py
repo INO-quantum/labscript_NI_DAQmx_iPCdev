@@ -14,6 +14,7 @@
 __version__ = '1.1.0'
 
 # Jan-May 2024, modified by Andi to generate pseudoclock with NIDAQmx counter.
+# last change 14/6/2024 by Andi
 
 from labscript import (
     IntermediateDevice,
@@ -39,8 +40,9 @@ from time import perf_counter as get_ticks
 
 from user_devices.iPCdev.labscript_devices import (
     iPCdev, iPCdev_device,
-    HARDWARE_TYPE_AO, HARDWARE_TYPE_STATIC_AO, HARDWARE_TYPE_DO, HARDWARE_TYPE_STATIC_DO,
-    HARDWARE_TYPE_DDS, HARDWARE_TYPE_TRG,
+    HARDWARE_TYPE, HARDWARE_TYPE_AO, HARDWARE_TYPE_DO, HARDWARE_TYPE_DDS,
+    HARDWARE_SUBTYPE, HARDWARE_SUBTYPE_NONE, HARDWARE_SUBTYPE_STATIC, HARDWARE_SUBTYPE_TRIGGER,
+    HARDWARE_ADDRTYPE, HARDWARE_ADDRTYPE_SINGLE, HARDWARE_ADDRTYPE_MERGED,
     DEVICE_HARDWARE_INFO, DEVICE_INFO_TYPE, DEVICE_INFO_ADDRESS, DEVICE_INFO_CHANNEL,
 )
 
@@ -79,6 +81,9 @@ START_TRIGGER_EDGE_FALLING  = 'falling'
 DAQMX_INTERNAL_CLOCKRATE    = 100e6
 
 class NI_DAQmx_iPCdev(iPCdev):
+
+    # use shared clockline between boards
+    iPCdev.shared_clocklines = True
 
     @set_passed_properties(
         property_names={
@@ -377,7 +382,7 @@ class NI_DAQmx_iPCdev(iPCdev):
         split = connection.split(CON_SEP)
         if isinstance(channel, (AnalogOut, StaticAnalogOut)): # ao%i
             static = isinstance(channel, StaticAnalogOut)
-            hardware_info[DEVICE_INFO_TYPE] = HARDWARE_TYPE_STATIC_AO if static else HARDWARE_TYPE_AO
+            hardware_info[DEVICE_INFO_TYPE] = HARDWARE_TYPE_AO + (HARDWARE_SUBTYPE_STATIC if static else HARDWARE_SUBTYPE_NONE) + HARDWARE_ADDRTYPE_SINGLE
             if self.counter_AO is None:
                 raise LabscriptError("AO device '%s' connection '%s' but no counter given!\ngive a valid couner_AO for board '%s'." % (channel.name, connection, self.name))
             try:
@@ -396,7 +401,7 @@ class NI_DAQmx_iPCdev(iPCdev):
                 raise ValueError("Cannot add output with connection string '%s' to device with num_AO=%d" % (connection, self.num_AO))
         elif isinstance(channel, (DigitalOut, StaticDigitalOut)):
             static = isinstance(channel, StaticDigitalOut)
-            hardware_info[DEVICE_INFO_TYPE] = HARDWARE_TYPE_STATIC_DO if static else HARDWARE_TYPE_DO
+            hardware_info[DEVICE_INFO_TYPE] = HARDWARE_TYPE_DO + (HARDWARE_SUBTYPE_STATIC if static else HARDWARE_SUBTYPE_NONE) + HARDWARE_ADDRTYPE_MERGED
             if self.counter_DO is None:
                 raise LabscriptError("DO device '%s' connection '%s' but no counter given!\ngive a valid couner_DO for board '%s'." % (channel.name, connection, self.name))
             try:
@@ -421,42 +426,33 @@ class NI_DAQmx_iPCdev(iPCdev):
             if not static and not self.ports[port_str]['supports_buffered']:
                 raise ValueError("Cannot add DigitalOut port '%s', which does not support buffered output" % port_str)
         else:
-            raise LabscriptError('You have connected %s (class %s) to %s, but does not support children with that class.'%(channel.name, device.__class__, board_name))
+            raise LabscriptError('You have connected %s (class %s) to %s, but does not support children with that class.'%(channel.name, device.__class__, self.name))
 
         return clockline_name, hardware_info
 
     def add_device(self, device):
         """
         add given device to board.
-        this only calls the super class implementation.
-        here we only ensure that no clockline is created in addition to counters.
+        this only calls the super class implementation but with allow_create_new=False
+        this ensures that no clockline is created in addition to counters.
         exception: static channels.
         """
 
         #notes:
-        # - AnalogIn is not tested and will most likely not work
+        # - AnalogIn is not implemented
         # - we removed all static_AO/DO checks since we allow mixed static and dynamic channels.
-        #   TODO: I do not know if the NI devices allow this however.
+        #   but I do not know if the NI devices allow this however.
 
         # call iPCdev implementation which calls self.split_connection here
         # this should not create a new clockline = counter device since they should already exist.
-        devices = self.devices if self.primary is None else self.primary.devices
-        num_system_counter = len(devices)
-        super(NI_DAQmx_iPCdev, self).add_device(device)
-
-        # ensure that only board counters are used and not new clocklines created.
-        # exception: static channels do not use board counters but must use virtual clocklines.
-        if isinstance(device, (DigitalOut, AnalogOut)):
-            if (len(devices) != num_system_counter):
-                counter = self.counter_AO if isinstance(device, AnalogOut) else self.counter_DO
-                devices = [c.connection for c in devices]
-                raise LabscriptError("add_device '%s' to '%s' uses invalid counter '%s'!\nplease check counter names, create all NI boards before adding channels and check how many counters are available for your board (only one of linked counters can be used).\n[AO, DO] counter specified = [%s,%s]\nsystem counters = %s" % (device.name, self.name, device.parent_device.connection, self.counter_AO, self.counter_DO, str(devices)))
-        elif isinstance(device, (StaticDigitalOut, StaticAnalogOut)):
-            counter = [self.counter_AO, self.counter_DO]
-            #print(device.name, device.parent_device.connection)
-            if device.parent_device.connection in counter:
-                devices = [c.connection for c in devices]
-                raise LabscriptError("add_device '%s' (static) to '%s' uses counter '%s' instead of virtual clockline!\nthis is a bug!\nexisting clocklines: %s" % (device.name, self.name, device.parent_device.connection, str(devices)))
+        if isinstance(device, (AnalogOut, DigitalOut)):
+            allow_create_new = False
+        elif isinstance(device, (Pseudoclock, StaticAnalogOut, StaticDigitalOut)):
+            allow_create_new = True
+        else:
+            raise LabscriptError("%s device %s type %s cannot be added!" % (self.name, device.name, type(device).__name__))
+        #print(self.name, 'add_device', device.name)
+        super(NI_DAQmx_iPCdev, self).add_device(device, allow_create_new=allow_create_new)
 
 # create NI devices from existing labscript_devices.NI_DAQmx models
 import labscript_devices.NI_DAQmx.models as models
